@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "default_task",
+  "loop_count": 3,
+  "delay_seconds": 2.0,
+  "steps": [
+    {
+      "type": "click",
+      "x": 1158,
+      "y": 28,
+      "button": "left"
+    },
+    {
+      "type": "click",
+      "x": 925,
+      "y": 28,
+      "button": "left"
+    },
+    {
+      "type": "wait",
+      "seconds": 1.0
+    }
+  ]
+}

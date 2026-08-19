@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Auto20260819",
+  "loop_count": 1,
+  "delay_seconds": 0.3,
+  "steps": [
+    {
+      "type": "click",
+      "x": 925,
+      "y": 28,
+      "button": "left"
+    },
+    {
+      "type": "paste",
+      "items": [
+        "hi",
+        "ho"
+      ]
+    },
+    {
+      "type": "key",
+      "combo": "enter"
+    },
+    {
+      "type": "wait",
+      "seconds": 1.0
+    },
+    {
+      "type": "click",
+      "x": 1158,
+      "y": 28,
+      "button": "left"
+    }
+  ]
+}
