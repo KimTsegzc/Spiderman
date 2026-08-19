@@ -1,4 +1,4 @@
-"""SpiderMan V1.3.
+"""SpiderMan V1.5.
 
 Windows desktop automation tool with task editing, loop execution,
 JSON save/load, and simple mouse/keyboard/wait actions.
@@ -11,6 +11,9 @@ import queue
 import threading
 import time
 import ctypes
+import re
+import sys
+from ctypes import wintypes
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
@@ -22,11 +25,23 @@ _pyautogui = None
 _pyperclip = None
 
 
-APP_DIR = Path(__file__).resolve().parent
+def _get_runtime_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+APP_DIR = _get_runtime_app_dir()
 TASK_DIR = APP_DIR / "tasks"
 TASK_DIR.mkdir(exist_ok=True)
-APP_VERSION = "V1.3"
+APP_VERSION = "V1.5"
 APP_AUTHOR = "广州分行 xiexin1.gd"
+GLOBAL_START_HOTKEY_LABEL = "Ctrl+F5"
+GLOBAL_STOP_HOTKEY_LABEL = "Ctrl+Shift+Alt+W"
+HOTKEY_ID_START = 0xB000
+HOTKEY_ID_STOP = 0xB001
+WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
 
 BUILTIN_TASKS: Dict[str, Dict[str, Any]] = {
     "auto_test": {
@@ -73,7 +88,18 @@ def _enable_high_dpi_awareness() -> None:
 
 
 class StepEditor:
-    def __init__(self, master: tk.Widget, index: int, on_delete, on_move_up, on_move_down, on_duplicate, on_clear):
+    def __init__(
+        self,
+        master: tk.Widget,
+        index: int,
+        on_delete,
+        on_move_up,
+        on_move_down,
+        on_duplicate,
+        on_clear,
+        on_paste_changed=None,
+        get_next_section_name=None,
+    ):
         self.master = master
         self.index = index
         self.on_delete = on_delete
@@ -81,6 +107,9 @@ class StepEditor:
         self.on_move_down = on_move_down
         self.on_duplicate = on_duplicate
         self.on_clear = on_clear
+        self.on_paste_changed = on_paste_changed
+        self.get_next_section_name = get_next_section_name
+        self._section_name_cache: str | None = None
         self.frame = ttk.Frame(master, padding=4, relief="groove", style="StepCard.TFrame")
         self.frame.columnconfigure(0, weight=1)
 
@@ -88,12 +117,13 @@ class StepEditor:
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
         self.title_var = tk.StringVar(value=f"步骤 {index + 1}")
-        ttk.Label(header, textvariable=self.title_var, width=10).grid(row=0, column=0, sticky="w")
+        self.title_label = ttk.Label(header, textvariable=self.title_var, width=14)
+        self.title_label.grid(row=0, column=0, sticky="w")
         self.type_var = tk.StringVar(value="click")
         type_box = ttk.Combobox(
             header,
             textvariable=self.type_var,
-            values=["click", "paste", "key", "wait"],
+            values=["click", "paste", "key", "wait", "section"],
             state="readonly",
             width=10,
         )
@@ -117,7 +147,10 @@ class StepEditor:
 
     def refresh_index(self, index: int) -> None:
         self.index = index
-        self.title_var.set(f"步骤 {index + 1}")
+        if self.type_var.get() == "section":
+            self.title_var.set(self._section_name_cache or f"阶段 {index + 1}")
+        else:
+            self.title_var.set(f"步骤 {index + 1}")
 
     def clear_body(self) -> None:
         for child in self.body.winfo_children():
@@ -150,8 +183,17 @@ class StepEditor:
             self._build_paste_fields()
         elif current == "key":
             self._build_key_fields()
+        elif current == "section":
+            self._build_section_fields()
         else:
             self._build_wait_fields()
+        self._refresh_title_style()
+        if self.on_paste_changed:
+            self.on_paste_changed()
+
+    def _refresh_title_style(self) -> None:
+        style_name = "SectionStepTitle.TLabel" if self.type_var.get() == "section" else "StepTitle.TLabel"
+        self.title_label.configure(style=style_name)
 
     def _build_click_fields(self) -> None:
         ttk.Label(self.body, text="X").grid(row=0, column=0, sticky="w")
@@ -171,13 +213,26 @@ class StepEditor:
         ).grid(
             row=0, column=5, sticky="w", padx=(4, 0)
         )
-        self.fields = {"x": x_var, "y": y_var, "button": btn_var}
+        ttk.Label(self.body, text="点击").grid(row=0, column=6, sticky="w", padx=(8, 0))
+        clicks_var = tk.StringVar(value="single")
+        ttk.Combobox(
+            self.body,
+            textvariable=clicks_var,
+            values=["single", "double", "triple"],
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=7, sticky="w", padx=(4, 0))
+        self.fields = {"x": x_var, "y": y_var, "button": btn_var, "click_mode": clicks_var}
 
     def _build_paste_fields(self) -> None:
         ttk.Label(self.body, text='文本数组 JSON').grid(row=0, column=0, sticky="w")
         items_var = tk.StringVar(value='["文本1", "文本2"]')
         entry = ttk.Entry(self.body, textvariable=items_var)
         entry.grid(row=0, column=1, columnspan=5, sticky="ew", padx=(6, 0))
+        if self.on_paste_changed:
+            items_var.trace_add("write", lambda *_args: self.on_paste_changed())
+            entry.bind("<FocusOut>", lambda _event: self.on_paste_changed())
+            entry.bind("<Return>", lambda _event: self.on_paste_changed())
         self.fields = {"items": items_var}
 
     def _build_key_fields(self) -> None:
@@ -223,14 +278,37 @@ class StepEditor:
         ttk.Entry(self.body, textvariable=seconds_var, width=8).grid(row=0, column=1, sticky="w", padx=(6, 0))
         self.fields = {"seconds": seconds_var}
 
+    def _build_section_fields(self) -> None:
+        if not self._section_name_cache:
+            if callable(self.get_next_section_name):
+                self._section_name_cache = self.get_next_section_name()
+            else:
+                self._section_name_cache = "阶段1"
+        ttk.Label(self.body, text="阶段名", foreground="#8E0C0C").grid(row=0, column=0, sticky="w")
+        title_var = tk.StringVar(value=self._section_name_cache)
+        ttk.Entry(self.body, textvariable=title_var, width=18).grid(row=0, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(self.body, text="备注", foreground="#8E0C0C").grid(row=0, column=2, sticky="w")
+        note_var = tk.StringVar(value="")
+        ttk.Entry(self.body, textvariable=note_var).grid(row=0, column=3, columnspan=3, sticky="ew", padx=(6, 0))
+        title_var.trace_add("write", lambda *_args: self._on_section_title_changed(title_var))
+        self.fields = {"title": title_var, "note": note_var}
+
+    def _on_section_title_changed(self, title_var: tk.StringVar) -> None:
+        title = title_var.get().strip()
+        self._section_name_cache = title or self._section_name_cache
+        self.title_var.set(title or "阶段")
+
     def to_dict(self) -> Dict[str, Any]:
         step_type = self.type_var.get()
         if step_type == "click":
+            click_mode = self.fields["click_mode"].get().strip().lower()
+            clicks_map = {"single": 1, "double": 2, "triple": 3}
             return {
                 "type": "click",
                 "x": int(float(self.fields["x"].get())),
                 "y": int(float(self.fields["y"].get())),
                 "button": self.fields["button"].get(),
+                "clicks": clicks_map.get(click_mode, 1),
             }
         if step_type == "paste":
             items = json.loads(self.fields["items"].get())
@@ -247,6 +325,10 @@ class StepEditor:
             if not combo:
                 raise ValueError("按键组合不能为空")
             return {"type": "key", "combo": combo}
+        if step_type == "section":
+            title = self.fields["title"].get().strip() or "阶段"
+            note = self.fields["note"].get().strip()
+            return {"type": "section", "title": title, "note": note}
         seconds = float(self.fields["seconds"].get())
         if seconds < 0:
             raise ValueError("等待秒数不能小于 0")
@@ -260,10 +342,23 @@ class StepEditor:
             self.fields["x"].set(str(data.get("x", 0)))
             self.fields["y"].set(str(data.get("y", 0)))
             self.fields["button"].set(data.get("button", "left"))
+            clicks = int(data.get("clicks", 1))
+            click_mode = "single"
+            if clicks >= 3:
+                click_mode = "triple"
+            elif clicks == 2:
+                click_mode = "double"
+            self.fields["click_mode"].set(click_mode)
         elif step_type == "paste":
             self.fields["items"].set(json.dumps(data.get("items", []), ensure_ascii=False))
         elif step_type == "key":
             self.fields["combo"].set(data.get("combo", "tab"))
+        elif step_type == "section":
+            title = str(data.get("title", "阶段")).strip() or "阶段"
+            self._section_name_cache = title
+            self.fields["title"].set(title)
+            self.fields["note"].set(str(data.get("note", "")))
+            self.title_var.set(title)
         else:
             self.fields["seconds"].set(str(data.get("seconds", 1)))
 
@@ -273,16 +368,19 @@ class App:
         _enable_high_dpi_awareness()
         self.root = tk.Tk()
         self.root.title(f"蜘蛛侠Spiderman+{APP_VERSION}")
-        self.root.geometry("980x760")
-        self.root.minsize(900, 660)
-
-        self._apply_font_scale(16)
+        self.window_width = 980
+        self.window_height = 760
+        self._configure_window_and_fonts()
 
         self.stop_event = threading.Event()
+        self.hotkey_stop_event = threading.Event()
+        self.hotkey_thread: threading.Thread | None = None
+        self.hotkey_thread_id: int | None = None
         self.worker: threading.Thread | None = None
         self.ui_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
         self.step_editors: List[StepEditor] = []
         self._render_pending = False
+        self._loading_task = False
 
         self.task_name_var = tk.StringVar(value=f"Auto{date.today():%Y%m%d}")
         self.loop_count_var = tk.StringVar(value="1")
@@ -293,6 +391,40 @@ class App:
         self._load_task_list()
         self.root.after_idle(lambda: self.add_step({"type": "click", "x": 0, "y": 0, "button": "left"}))
         self.root.after(100, self._poll_ui_queue)
+        self.root.bind("<Configure>", self._on_root_resize)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._start_global_hotkey_listener()
+
+    def _configure_window_and_fonts(self) -> None:
+        screen_width = max(self.root.winfo_screenwidth(), 1024)
+        screen_height = max(self.root.winfo_screenheight(), 768)
+
+        target_width = max(980, int(screen_width * 0.62))
+        target_height = max(720, int(screen_height * 0.78))
+        target_width = min(target_width, screen_width - 80)
+        target_height = min(target_height, screen_height - 100)
+
+        min_width = min(960, max(820, int(screen_width * 0.48)))
+        min_height = min(700, max(620, int(screen_height * 0.55)))
+
+        self.window_width = target_width
+        self.window_height = target_height
+
+        offset_x = max((screen_width - target_width) // 2, 0)
+        offset_y = max((screen_height - target_height) // 2, 0)
+        self.root.geometry(f"{target_width}x{target_height}+{offset_x}+{offset_y}")
+        self.root.minsize(min_width, min_height)
+
+        font_size = 13
+        if screen_height >= 1600:
+            font_size = 16
+        elif screen_height >= 1440:
+            font_size = 15
+        elif screen_height >= 1200:
+            font_size = 14
+        elif screen_height <= 900 or screen_width <= 1366:
+            font_size = 11
+        self._apply_font_scale(font_size)
 
     def _apply_font_scale(self, size: int) -> None:
         self.default_font = tkfont.Font(family="Segoe UI", size=size, weight="bold")
@@ -310,6 +442,8 @@ class App:
         style.configure("TRadiobutton", font=self.default_font)
 
         style.configure("Section.TLabelframe.Label", font=self.section_font)
+        style.configure("StepTitle.TLabel", font=self.default_font, background="#F7F9FC", foreground="#1B2430")
+        style.configure("SectionStepTitle.TLabel", font=self.default_font, background="#F7F9FC", foreground="#8E0C0C")
         # Readability-first palette with subtle Spider-Man accents.
         style.configure("Main.TFrame", background="#EEF2F7")
         style.configure("StepCard.TFrame", background="#F7F9FC")
@@ -344,7 +478,7 @@ class App:
         ttk.Entry(top, textvariable=self.loop_count_var, width=10).grid(row=0, column=3, sticky="w", padx=(6, 18))
         ttk.Label(top, text="步骤间隔(s)").grid(row=0, column=4, sticky="w")
         ttk.Entry(top, textvariable=self.delay_var, width=10).grid(row=0, column=5, sticky="w", padx=(6, 18))
-        ttk.Button(top, text="运行", command=self.run_task, style="AccentRun.TButton").grid(row=0, column=7, sticky="e")
+        ttk.Button(top, text="运行", command=self.run_task, style="AccentRun.TButton", width=8).grid(row=0, column=7, sticky="e")
         ttk.Button(top, text="Info", command=self.show_info, width=6).grid(row=0, column=8, sticky="e", padx=(8, 0))
 
         middle = ttk.Frame(container, style="Main.TFrame")
@@ -352,11 +486,13 @@ class App:
         middle.columnconfigure(0, weight=1)
         middle.columnconfigure(1, weight=0)
         middle.rowconfigure(0, weight=1)
+        self.middle_frame = middle
 
         canvas_frame = ttk.LabelFrame(middle, text="步骤列表", padding=6, style="Panel.TLabelframe")
         canvas_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         canvas_frame.columnconfigure(0, weight=1)
         canvas_frame.rowconfigure(1, weight=1)
+        self.canvas_frame = canvas_frame
 
         list_toolbar = ttk.Frame(canvas_frame, style="Main.TFrame")
         list_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -378,10 +514,11 @@ class App:
 
         side = ttk.LabelFrame(middle, text="保存/加载", padding=8, style="Panel.TLabelframe")
         side.grid(row=0, column=1, sticky="nsew")
-        side.configure(width=250)
+        side.configure(width=max(260, int(self.window_width * 0.25)))
         side.grid_propagate(False)
         side.columnconfigure(0, weight=1)
         side.rowconfigure(2, weight=1)
+        self.side_frame = side
 
         button_row = ttk.Frame(side, style="Main.TFrame")
         button_row.grid(row=0, column=0, sticky="ew")
@@ -399,8 +536,90 @@ class App:
         bottom = ttk.Frame(container, style="Main.TFrame")
         bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
-        ttk.Button(bottom, text="停止", command=self.stop_task).grid(row=0, column=0, sticky="w")
-        ttk.Label(bottom, textvariable=self.status_var).grid(row=0, column=1, sticky="e")
+        ttk.Label(
+            bottom,
+            text=f"启动快捷键：{GLOBAL_START_HOTKEY_LABEL}    全局叫停快捷键：{GLOBAL_STOP_HOTKEY_LABEL}",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        ttk.Button(bottom, text="停止", command=self.stop_task).grid(row=1, column=0, sticky="w")
+        ttk.Label(bottom, textvariable=self.status_var).grid(row=1, column=1, sticky="e")
+
+    def _on_root_resize(self, event) -> None:
+        if event.widget is not self.root:
+            return
+        if not hasattr(self, "middle_frame"):
+            return
+
+        width = max(event.width, self.root.winfo_width())
+        side_width = max(260, int(width * 0.25))
+        self.side_frame.configure(width=side_width)
+
+        if width < 1180:
+            self.middle_frame.columnconfigure(1, weight=1)
+            self.middle_frame.rowconfigure(1, weight=0)
+            self.canvas_frame.grid_configure(row=0, column=0, columnspan=2, padx=(0, 0), pady=(0, 8), sticky="nsew")
+            self.side_frame.grid_configure(row=1, column=0, columnspan=2, sticky="ew")
+        else:
+            self.middle_frame.columnconfigure(1, weight=0)
+            self.canvas_frame.grid_configure(row=0, column=0, columnspan=1, padx=(0, 8), pady=(0, 0), sticky="nsew")
+            self.side_frame.grid_configure(row=0, column=1, columnspan=1, sticky="nsew")
+
+    def _start_global_hotkey_listener(self) -> None:
+        if self.hotkey_thread and self.hotkey_thread.is_alive():
+            return
+        self.hotkey_stop_event.clear()
+        self.hotkey_thread = threading.Thread(target=self._hotkey_listener_loop, daemon=True)
+        self.hotkey_thread.start()
+
+    def _hotkey_listener_loop(self) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        self.hotkey_thread_id = int(kernel32.GetCurrentThreadId())
+
+        mod_alt = 0x0001
+        mod_control = 0x0002
+        mod_shift = 0x0004
+        vk_f5 = 0x74
+        vk_w = 0x57
+        stop_modifiers = mod_alt | mod_control | mod_shift
+        start_modifiers = mod_control
+
+        start_ok = bool(user32.RegisterHotKey(None, HOTKEY_ID_START, start_modifiers, vk_f5))
+        stop_ok = bool(user32.RegisterHotKey(None, HOTKEY_ID_STOP, stop_modifiers, vk_w))
+        if not start_ok:
+            self.ui_queue.put(("status", f"启动热键注册失败：{GLOBAL_START_HOTKEY_LABEL}"))
+        if not stop_ok:
+            self.ui_queue.put(("status", f"全局热键注册失败：{GLOBAL_STOP_HOTKEY_LABEL}"))
+        if not start_ok and not stop_ok:
+            return
+
+        msg = wintypes.MSG()
+        try:
+            while not self.hotkey_stop_event.is_set():
+                result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if result <= 0:
+                    break
+                if msg.message == WM_HOTKEY:
+                    hotkey_id = int(msg.wParam)
+                    if hotkey_id == HOTKEY_ID_START:
+                        self.ui_queue.put(("hotkey_start", None))
+                    elif hotkey_id == HOTKEY_ID_STOP:
+                        self.ui_queue.put(("hotkey_stop", None))
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            user32.UnregisterHotKey(None, HOTKEY_ID_START)
+            user32.UnregisterHotKey(None, HOTKEY_ID_STOP)
+
+    def _stop_global_hotkey_listener(self) -> None:
+        self.hotkey_stop_event.set()
+        if self.hotkey_thread_id:
+            ctypes.windll.user32.PostThreadMessageW(self.hotkey_thread_id, WM_QUIT, 0, 0)
+        if self.hotkey_thread and self.hotkey_thread.is_alive():
+            self.hotkey_thread.join(timeout=0.5)
+
+    def _on_close(self) -> None:
+        self._stop_global_hotkey_listener()
+        self.root.destroy()
 
     def show_info(self) -> None:
         today = date.today().isoformat()
@@ -409,9 +628,9 @@ class App:
             f"作者：{APP_AUTHOR}\n"
             f"日期：{today}\n\n"
             "版本变更简介：\n"
-            "- V1.3：应用名更新为 蜘蛛侠Spiderman+V版本号。\n"
-            "- V1.3：优化 Windows DPI 适配，修复首次启动字体发糊。\n"
-            "- V1.3：新增内置任务 auto_test，可在右侧保存列表加载。\n\n"
+            "- V1.5：paste 数值变更时，循环次数 K 自动更新为 paste 最大数组长度。\n"
+            "- V1.4：click 新增 single/double/triple，支持全局启动/叫停快捷键。\n"
+            "- V1.3：应用名更新并优化 DPI 显示，新增内置任务 auto_test。\n\n"
             "使用方式：\n"
             "1. 在步骤列表中新增并配置 click/paste/key/wait。\n"
             "2. 设定循环次数 K 与步骤间隔(s)。\n"
@@ -466,6 +685,8 @@ class App:
             move_down,
             duplicate_current,
             clear_current,
+            self._sync_loop_count_from_paste,
+            self._next_section_name,
         )
         self.step_editors.insert(insert_at, editor)
         if data:
@@ -483,17 +704,58 @@ class App:
             return
         editor.reset_to_default()
         editor.clear_values()
+        self._sync_loop_count_from_paste()
 
     def clear_all_steps(self) -> None:
         for editor in self.step_editors:
             editor.frame.destroy()
         self.step_editors.clear()
+        self._sync_loop_count_from_paste()
         self._request_render_steps()
 
     def remove_step(self, editor: StepEditor) -> None:
         if editor in self.step_editors:
             self.step_editors.remove(editor)
+            self._sync_loop_count_from_paste()
             self._request_render_steps()
+
+    def _next_section_name(self) -> str:
+        max_no = 0
+        pattern = re.compile(r"^阶段\s*(\d+)$")
+        for editor in self.step_editors:
+            if editor.type_var.get() != "section":
+                continue
+            title_var = editor.fields.get("title")
+            if not title_var:
+                continue
+            title = title_var.get().strip()
+            match = pattern.match(title)
+            if not match:
+                continue
+            max_no = max(max_no, int(match.group(1)))
+        return f"阶段{max_no + 1}"
+
+    def _sync_loop_count_from_paste(self) -> None:
+        if self._loading_task:
+            return
+        max_size = 0
+        for editor in self.step_editors:
+            if editor.type_var.get() != "paste":
+                continue
+            items_var = editor.fields.get("items")
+            if not items_var:
+                continue
+            try:
+                items = json.loads(items_var.get())
+            except Exception:
+                continue
+            if not isinstance(items, list):
+                continue
+            if not all(isinstance(item, str) for item in items):
+                continue
+            max_size = max(max_size, len(items))
+        if max_size > 0:
+            self.loop_count_var.set(str(max_size))
 
     def _request_render_steps(self) -> None:
         if self._render_pending:
@@ -622,14 +884,18 @@ class App:
             messagebox.showerror("加载失败", str(exc))
 
     def load_task_data(self, data: Dict[str, Any], source_name: str) -> None:
-        self.task_name_var.set(data.get("name", source_name.rsplit(".", 1)[0]))
-        self.loop_count_var.set(str(data.get("loop_count", 1)))
-        self.delay_var.set(str(data.get("delay_seconds", 0.3)))
-        for editor in self.step_editors:
-            editor.frame.destroy()
-        self.step_editors.clear()
-        for step in data.get("steps", []):
-            self.add_step(step)
+        self._loading_task = True
+        try:
+            self.task_name_var.set(data.get("name", source_name.rsplit(".", 1)[0]))
+            self.loop_count_var.set(str(data.get("loop_count", 1)))
+            self.delay_var.set(str(data.get("delay_seconds", 0.3)))
+            for editor in self.step_editors:
+                editor.frame.destroy()
+            self.step_editors.clear()
+            for step in data.get("steps", []):
+                self.add_step(step)
+        finally:
+            self._loading_task = False
         self.status_var.set(f"已加载：{source_name}")
 
     def _load_task_list(self) -> None:
@@ -709,7 +975,14 @@ class App:
         pyautogui = self._get_pyautogui()
         step_type = step.get("type")
         if step_type == "click":
-            pyautogui.click(x=int(step["x"]), y=int(step["y"]), button=step.get("button", "left"))
+            clicks = max(1, min(3, int(step.get("clicks", 1))))
+            pyautogui.click(
+                x=int(step["x"]),
+                y=int(step["y"]),
+                button=step.get("button", "left"),
+                clicks=clicks,
+                interval=0.08 if clicks > 1 else 0.0,
+            )
             return
         if step_type == "paste":
             pyperclip = self._get_pyperclip()
@@ -733,6 +1006,8 @@ class App:
             return
         if step_type == "wait":
             time.sleep(float(step.get("seconds", 1)))
+            return
+        if step_type == "section":
             return
         raise ValueError(f"未知步骤类型：{step_type}")
 
@@ -766,6 +1041,17 @@ class App:
                     self.status_var.set(payload)
                 elif kind == "show_window":
                     self._show_window()
+                elif kind == "hotkey_start":
+                    if self.worker and self.worker.is_alive():
+                        self.status_var.set("任务已在执行中")
+                    else:
+                        self.run_task()
+                        self.status_var.set(f"已触发启动快捷键：{GLOBAL_START_HOTKEY_LABEL}")
+                elif kind == "hotkey_stop":
+                    if self.worker and self.worker.is_alive():
+                        self.stop_task()
+                        self.status_var.set(f"已触发全局叫停：{GLOBAL_STOP_HOTKEY_LABEL}")
+                        self._show_window()
                 elif kind == "error":
                     self.status_var.set("执行失败")
                     self._show_window()
@@ -775,7 +1061,10 @@ class App:
         self.root.after(100, self._poll_ui_queue)
 
     def run(self) -> None:
-        self.root.mainloop()
+        try:
+            self.root.mainloop()
+        finally:
+            self._stop_global_hotkey_listener()
 
 
 if __name__ == "__main__":

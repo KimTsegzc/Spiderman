@@ -1,4 +1,4 @@
-"""SpiderMan V1.3 release builder.
+"""SpiderMan V1.5 release builder.
 
 Builds one-file exe, compresses to zip, and splits zip into 48MB parts.
 """
@@ -16,8 +16,8 @@ DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 WORK = ROOT / "work"
 APP = ROOT / "app.py"
-EXE_NAME = "spiderman"
-APP_VERSION = "V1.3"
+APP_VERSION = "V1.5"
+EXE_NAME = f"spiderman_{APP_VERSION.lower()}"
 ZIP_NAME = ROOT / f"spiderman_{APP_VERSION.lower()}.zip"
 SPLIT_SIZE = 48 * 1024 * 1024
 

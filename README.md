@@ -1,6 +1,6 @@
-# 蜘蛛侠Spiderman+V1.3
+# 蜘蛛侠Spiderman+V1.5
 
-## V1.3 简要说明
+## V1.5 简要说明
 
 - 目标：Windows 下可配置步骤的轻量自动化执行工具。
 - 执行模型：按步骤顺序执行，支持循环 `K` 次和步骤间延迟。
@@ -61,10 +61,10 @@ D:/Anaconda/python.exe -m PyInstaller --noconsole --onefile app.py
 
 ## 一键发布产物
 
-项目内置了 [build.py](build.py)（V1.3 发布脚本）：
+项目内置了 [build.py](build.py)（V1.5 发布脚本）：
 
-- 生成单文件 exe
-- 打包 zip（文件名示例：spiderman_v1.3.zip）
+- 生成单文件 exe（文件名示例：spiderman_v1.5.exe）
+- 打包 zip（文件名示例：spiderman_v1.5.zip）
 - 按 48MB 切片到 `parts/`
 
 执行：
@@ -76,8 +76,8 @@ D:/Anaconda/python.exe -m PyInstaller --noconsole --onefile app.py
 切片合并（Windows PowerShell）：
 
 ```powershell
-$parts = Get-ChildItem .\parts\spiderman.zip.part* | Sort-Object Name
-$target = ".\spiderman.zip"
+$parts = Get-ChildItem .\parts\spiderman_v1.5.zip.part* | Sort-Object Name
+$target = ".\spiderman_v1.5.zip"
 $ms = New-Object System.IO.MemoryStream
 foreach ($p in $parts) {
   $bytes = [System.IO.File]::ReadAllBytes($p.FullName)
