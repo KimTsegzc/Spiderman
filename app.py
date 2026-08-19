@@ -1,4 +1,4 @@
-"""SpiderMan V1.2.
+"""SpiderMan V1.3.
 
 Windows desktop automation tool with task editing, loop execution,
 JSON save/load, and simple mouse/keyboard/wait actions.
@@ -10,6 +10,7 @@ import json
 import queue
 import threading
 import time
+import ctypes
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
@@ -24,8 +25,51 @@ _pyperclip = None
 APP_DIR = Path(__file__).resolve().parent
 TASK_DIR = APP_DIR / "tasks"
 TASK_DIR.mkdir(exist_ok=True)
-APP_VERSION = "v1.2"
+APP_VERSION = "V1.3"
 APP_AUTHOR = "广州分行 xiexin1.gd"
+
+BUILTIN_TASKS: Dict[str, Dict[str, Any]] = {
+    "auto_test": {
+        "version": 1,
+        "name": "auto_test",
+        "loop_count": 1,
+        "delay_seconds": 0.3,
+        "steps": [
+            {"type": "key", "combo": "win"},
+            {"type": "paste", "items": ["chrome"]},
+            {"type": "key", "combo": "enter"},
+            {"type": "wait", "seconds": 1.0},
+            {"type": "key", "combo": "ctrl+l"},
+            {"type": "paste", "items": ["www.ccb.com"]},
+            {"type": "key", "combo": "enter"},
+        ],
+    }
+}
+
+BUILTIN_LIST_PREFIX = "[内置] "
+
+
+def _enable_high_dpi_awareness() -> None:
+    """Enable DPI awareness before creating Tk root to avoid blurry first render."""
+    try:
+        user32 = ctypes.windll.user32
+        # -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
+        if hasattr(user32, "SetProcessDpiAwarenessContext"):
+            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+            return
+    except Exception:
+        pass
+    try:
+        shcore = ctypes.windll.shcore
+        # 2 means PROCESS_PER_MONITOR_DPI_AWARE.
+        shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 
 class StepEditor:
@@ -226,8 +270,9 @@ class StepEditor:
 
 class App:
     def __init__(self) -> None:
+        _enable_high_dpi_awareness()
         self.root = tk.Tk()
-        self.root.title(f"蜘蛛侠 {APP_VERSION}")
+        self.root.title(f"蜘蛛侠Spiderman+{APP_VERSION}")
         self.root.geometry("980x760")
         self.root.minsize(900, 660)
 
@@ -364,9 +409,9 @@ class App:
             f"作者：{APP_AUTHOR}\n"
             f"日期：{today}\n\n"
             "版本变更简介：\n"
-            "- V1.2：优化主题配色，红色仅用于关键操作按钮（运行/新增步骤）。\n"
-            "- V1.2：新增 Info 面板，补充版本、使用方式和框架说明。\n"
-            "- V1.2：增强步骤编辑体验（复制、清空、清空全部）。\n\n"
+            "- V1.3：应用名更新为 蜘蛛侠Spiderman+V版本号。\n"
+            "- V1.3：优化 Windows DPI 适配，修复首次启动字体发糊。\n"
+            "- V1.3：新增内置任务 auto_test，可在右侧保存列表加载。\n\n"
             "使用方式：\n"
             "1. 在步骤列表中新增并配置 click/paste/key/wait。\n"
             "2. 设定循环次数 K 与步骤间隔(s)。\n"
@@ -558,26 +603,39 @@ class App:
             messagebox.showinfo("提示", "先选择一个已保存任务")
             return
         name = self.task_list.get(selection[0])
+        if name.startswith(BUILTIN_LIST_PREFIX):
+            builtin_name = name[len(BUILTIN_LIST_PREFIX) :]
+            data = BUILTIN_TASKS.get(builtin_name)
+            if not data:
+                messagebox.showerror("加载失败", f"内置任务不存在：{builtin_name}")
+                return
+            self.load_task_data(data, f"{builtin_name}.json")
+            return
         path = TASK_DIR / name
         self.load_task_file(path)
 
     def load_task_file(self, path: Path) -> None:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            self.task_name_var.set(data.get("name", path.stem))
-            self.loop_count_var.set(str(data.get("loop_count", 1)))
-            self.delay_var.set(str(data.get("delay_seconds", 0.3)))
-            for editor in self.step_editors:
-                editor.frame.destroy()
-            self.step_editors.clear()
-            for step in data.get("steps", []):
-                self.add_step(step)
-            self.status_var.set(f"已加载：{path.name}")
+            self.load_task_data(data, path.name)
         except Exception as exc:
             messagebox.showerror("加载失败", str(exc))
 
+    def load_task_data(self, data: Dict[str, Any], source_name: str) -> None:
+        self.task_name_var.set(data.get("name", source_name.rsplit(".", 1)[0]))
+        self.loop_count_var.set(str(data.get("loop_count", 1)))
+        self.delay_var.set(str(data.get("delay_seconds", 0.3)))
+        for editor in self.step_editors:
+            editor.frame.destroy()
+        self.step_editors.clear()
+        for step in data.get("steps", []):
+            self.add_step(step)
+        self.status_var.set(f"已加载：{source_name}")
+
     def _load_task_list(self) -> None:
         self.task_list.delete(0, tk.END)
+        for builtin_name in sorted(BUILTIN_TASKS):
+            self.task_list.insert(tk.END, f"{BUILTIN_LIST_PREFIX}{builtin_name}")
         for path in sorted(TASK_DIR.glob("*.json")):
             self.task_list.insert(tk.END, path.name)
 

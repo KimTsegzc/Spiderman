@@ -1,6 +1,6 @@
-# SpiderMan
+# 蜘蛛侠Spiderman+V1.3
 
-## V1 简要说明
+## V1.3 简要说明
 
 - 目标：Windows 下可配置步骤的轻量自动化执行工具。
 - 执行模型：按步骤顺序执行，支持循环 `K` 次和步骤间延迟。
@@ -61,10 +61,10 @@ D:/Anaconda/python.exe -m PyInstaller --noconsole --onefile app.py
 
 ## 一键发布产物
 
-项目内置了 [build.py](build.py)（V1 发布脚本）：
+项目内置了 [build.py](build.py)（V1.3 发布脚本）：
 
 - 生成单文件 exe
-- 打包 zip
+- 打包 zip（文件名示例：spiderman_v1.3.zip）
 - 按 48MB 切片到 `parts/`
 
 执行：
