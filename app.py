@@ -1,4 +1,4 @@
-"""SpiderMan V1.
+"""SpiderMan V1.2.
 
 Windows desktop automation tool with task editing, loop execution,
 JSON save/load, and simple mouse/keyboard/wait actions.
@@ -24,6 +24,8 @@ _pyperclip = None
 APP_DIR = Path(__file__).resolve().parent
 TASK_DIR = APP_DIR / "tasks"
 TASK_DIR.mkdir(exist_ok=True)
+APP_VERSION = "v1.2"
+APP_AUTHOR = "广州分行 xiexin1.gd"
 
 
 class StepEditor:
@@ -35,10 +37,10 @@ class StepEditor:
         self.on_move_down = on_move_down
         self.on_duplicate = on_duplicate
         self.on_clear = on_clear
-        self.frame = ttk.Frame(master, padding=4, relief="groove")
+        self.frame = ttk.Frame(master, padding=4, relief="groove", style="StepCard.TFrame")
         self.frame.columnconfigure(0, weight=1)
 
-        header = ttk.Frame(self.frame)
+        header = ttk.Frame(self.frame, style="StepCard.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
         self.title_var = tk.StringVar(value=f"步骤 {index + 1}")
@@ -54,7 +56,7 @@ class StepEditor:
         type_box.grid(row=0, column=1, sticky="w")
         type_box.bind("<<ComboboxSelected>>", lambda _e: self.refresh_fields())
 
-        buttons = ttk.Frame(header)
+        buttons = ttk.Frame(header, style="StepCard.TFrame")
         buttons.grid(row=0, column=2, sticky="e")
         ttk.Button(buttons, text="上移", width=5, command=self.on_move_up).grid(row=0, column=0, padx=1)
         ttk.Button(buttons, text="下移", width=5, command=self.on_move_down).grid(row=0, column=1, padx=1)
@@ -62,7 +64,7 @@ class StepEditor:
         ttk.Button(buttons, text="清空", width=5, command=self.on_clear).grid(row=0, column=3, padx=1)
         ttk.Button(buttons, text="删除", width=5, command=self.on_delete).grid(row=0, column=4, padx=1)
 
-        self.body = ttk.Frame(self.frame)
+        self.body = ttk.Frame(self.frame, style="StepCard.TFrame")
         self.body.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.body.columnconfigure(1, weight=1)
 
@@ -225,7 +227,7 @@ class StepEditor:
 class App:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("蜘蛛侠")
+        self.root.title(f"蜘蛛侠 {APP_VERSION}")
         self.root.geometry("980x760")
         self.root.minsize(900, 660)
 
@@ -253,6 +255,7 @@ class App:
 
         self.root.option_add("*Font", self.default_font)
         style = ttk.Style(self.root)
+        style.theme_use("clam")
         style.configure("TLabel", font=self.default_font)
         style.configure("TButton", font=self.default_font)
         style.configure("TEntry", font=self.default_font)
@@ -262,16 +265,32 @@ class App:
         style.configure("TRadiobutton", font=self.default_font)
 
         style.configure("Section.TLabelframe.Label", font=self.section_font)
+        # Readability-first palette with subtle Spider-Man accents.
+        style.configure("Main.TFrame", background="#EEF2F7")
+        style.configure("StepCard.TFrame", background="#F7F9FC")
+        style.configure("Panel.TLabelframe", background="#FFFFFF", bordercolor="#CDD5E0", borderwidth=1)
+        style.configure("Panel.TLabelframe.Label", background="#FFFFFF", foreground="#8E0C0C", font=self.section_font)
+        style.configure("TLabel", background="#EEF2F7", foreground="#1B2430")
+        style.configure("TButton", background="#D8E0EA", foreground="#1B2430", borderwidth=1)
+        style.map("TButton", background=[("active", "#C8D2DE"), ("pressed", "#B4C1CF")])
+        style.configure("AccentRun.TButton", background="#B11313", foreground="#FFFFFF", borderwidth=1)
+        style.map("AccentRun.TButton", background=[("active", "#CC2626"), ("pressed", "#8E0C0C")])
+        style.configure("AccentAdd.TButton", background="#B11313", foreground="#FFFFFF", borderwidth=1)
+        style.map("AccentAdd.TButton", background=[("active", "#CC2626"), ("pressed", "#8E0C0C")])
+        style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#101114")
+        style.configure("TCombobox", fieldbackground="#FFFFFF", foreground="#101114")
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self.root, padding=8)
+        self.root.configure(bg="#E9EDF4")
+
+        container = ttk.Frame(self.root, padding=8, style="Main.TFrame")
         container.pack(fill="both", expand=True)
         container.columnconfigure(0, weight=1)
         container.rowconfigure(1, weight=1)
 
-        top = ttk.LabelFrame(container, text="任务配置", padding=12, style="Section.TLabelframe")
+        top = ttk.LabelFrame(container, text="任务配置", padding=12, style="Panel.TLabelframe")
         top.grid(row=0, column=0, sticky="ew")
-        for col in range(8):
+        for col in range(9):
             top.columnconfigure(col, weight=1 if col in (1, 3, 5, 7) else 0)
 
         ttk.Label(top, text="任务名").grid(row=0, column=0, sticky="w")
@@ -280,26 +299,27 @@ class App:
         ttk.Entry(top, textvariable=self.loop_count_var, width=10).grid(row=0, column=3, sticky="w", padx=(6, 18))
         ttk.Label(top, text="步骤间隔(s)").grid(row=0, column=4, sticky="w")
         ttk.Entry(top, textvariable=self.delay_var, width=10).grid(row=0, column=5, sticky="w", padx=(6, 18))
-        ttk.Button(top, text="运行", command=self.run_task).grid(row=0, column=7, sticky="e")
+        ttk.Button(top, text="运行", command=self.run_task, style="AccentRun.TButton").grid(row=0, column=7, sticky="e")
+        ttk.Button(top, text="Info", command=self.show_info, width=6).grid(row=0, column=8, sticky="e", padx=(8, 0))
 
-        middle = ttk.Frame(container)
+        middle = ttk.Frame(container, style="Main.TFrame")
         middle.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
         middle.columnconfigure(0, weight=1)
         middle.columnconfigure(1, weight=0)
         middle.rowconfigure(0, weight=1)
 
-        canvas_frame = ttk.LabelFrame(middle, text="步骤列表", padding=6, style="Section.TLabelframe")
+        canvas_frame = ttk.LabelFrame(middle, text="步骤列表", padding=6, style="Panel.TLabelframe")
         canvas_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         canvas_frame.columnconfigure(0, weight=1)
         canvas_frame.rowconfigure(1, weight=1)
 
-        list_toolbar = ttk.Frame(canvas_frame)
+        list_toolbar = ttk.Frame(canvas_frame, style="Main.TFrame")
         list_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         list_toolbar.columnconfigure(0, weight=1)
-        ttk.Button(list_toolbar, text="新增步骤", command=self.add_step).grid(row=0, column=0, sticky="w")
+        ttk.Button(list_toolbar, text="新增步骤", command=self.add_step, style="AccentAdd.TButton").grid(row=0, column=0, sticky="w")
         ttk.Button(list_toolbar, text="清空全部", command=self.clear_all_steps).grid(row=0, column=1, sticky="w", padx=(8, 0))
 
-        self.canvas = tk.Canvas(canvas_frame, highlightthickness=0)
+        self.canvas = tk.Canvas(canvas_frame, highlightthickness=0, bg="#F5F8FC")
         self.canvas.grid(row=1, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
         scrollbar.grid(row=1, column=1, sticky="ns")
@@ -311,14 +331,14 @@ class App:
         self.steps_container.bind("<Configure>", self._update_scroll_region)
         self.canvas.bind("<Configure>", self._resize_steps_window)
 
-        side = ttk.LabelFrame(middle, text="保存/加载", padding=8, style="Section.TLabelframe")
+        side = ttk.LabelFrame(middle, text="保存/加载", padding=8, style="Panel.TLabelframe")
         side.grid(row=0, column=1, sticky="nsew")
         side.configure(width=250)
         side.grid_propagate(False)
         side.columnconfigure(0, weight=1)
         side.rowconfigure(2, weight=1)
 
-        button_row = ttk.Frame(side)
+        button_row = ttk.Frame(side, style="Main.TFrame")
         button_row.grid(row=0, column=0, sticky="ew")
         ttk.Button(button_row, text="保存", command=self.save_task, width=8).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(button_row, text="另存为", command=self.save_task_as, width=8).grid(row=0, column=1, sticky="ew", padx=(0, 4))
@@ -326,16 +346,38 @@ class App:
         button_row.columnconfigure((0, 1, 2), weight=1)
 
         ttk.Label(side, text="已保存任务").grid(row=1, column=0, sticky="w", pady=(10, 4))
-        self.task_list = tk.Listbox(side, height=14, width=18)
+        self.task_list = tk.Listbox(side, height=14, width=18, bg="#FFFFFF", fg="#1B2430", selectbackground="#C9D7E8")
         self.task_list.grid(row=2, column=0, sticky="nsew")
         ttk.Button(side, text="刷新列表", command=self._load_task_list, width=12).grid(row=3, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(side, text="导出任务 JSON", command=self.export_task, width=12).grid(row=4, column=0, sticky="ew", pady=(6, 0))
 
-        bottom = ttk.Frame(container)
+        bottom = ttk.Frame(container, style="Main.TFrame")
         bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
         ttk.Button(bottom, text="停止", command=self.stop_task).grid(row=0, column=0, sticky="w")
         ttk.Label(bottom, textvariable=self.status_var).grid(row=0, column=1, sticky="e")
+
+    def show_info(self) -> None:
+        today = date.today().isoformat()
+        info_text = (
+            f"版本号：{APP_VERSION}\n"
+            f"作者：{APP_AUTHOR}\n"
+            f"日期：{today}\n\n"
+            "版本变更简介：\n"
+            "- V1.2：优化主题配色，红色仅用于关键操作按钮（运行/新增步骤）。\n"
+            "- V1.2：新增 Info 面板，补充版本、使用方式和框架说明。\n"
+            "- V1.2：增强步骤编辑体验（复制、清空、清空全部）。\n\n"
+            "使用方式：\n"
+            "1. 在步骤列表中新增并配置 click/paste/key/wait。\n"
+            "2. 设定循环次数 K 与步骤间隔(s)。\n"
+            "3. 点运行执行任务；可保存/加载任务 JSON 复用。\n\n"
+            "框架简介：\n"
+            "- UI：Tkinter + ttk（Windows 桌面）\n"
+            "- 自动化：pyautogui（鼠标/键盘）\n"
+            "- 剪贴板：pyperclip\n"
+            "- 数据：JSON 任务文件"
+        )
+        messagebox.showinfo("蜘蛛侠 - Info", info_text)
 
     def _update_scroll_region(self, _event=None) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
