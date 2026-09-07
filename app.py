@@ -1,4 +1,4 @@
-"""SpiderMan V1.5.
+"""SpiderMan V2.0.
 
 Windows desktop automation tool with task editing, loop execution,
 JSON save/load, and simple mouse/keyboard/wait actions.
@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 import ctypes
+import csv
 import re
 import sys
 from ctypes import wintypes
@@ -34,7 +35,7 @@ def _get_runtime_app_dir() -> Path:
 APP_DIR = _get_runtime_app_dir()
 TASK_DIR = APP_DIR / "tasks"
 TASK_DIR.mkdir(exist_ok=True)
-APP_VERSION = "V1.5"
+APP_VERSION = "V2.0"
 APP_AUTHOR = "广州分行 xiexin1.gd"
 GLOBAL_START_HOTKEY_LABEL = "Ctrl+F5"
 GLOBAL_STOP_HOTKEY_LABEL = "Ctrl+Shift+Alt+W"
@@ -88,6 +89,24 @@ def _enable_high_dpi_awareness() -> None:
 
 
 class StepEditor:
+    @staticmethod
+    def parse_paste_items_text(raw: str) -> List[str]:
+        text = raw.strip()
+        if not text:
+            return []
+
+        # Backward compatibility: accept historical JSON array format.
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                data = json.loads(text)
+                if isinstance(data, list) and all(isinstance(item, str) for item in data):
+                    return [item.strip() for item in data if item.strip()]
+            except Exception:
+                pass
+
+        normalized = text.replace("，", ",")
+        return [part.strip() for part in normalized.split(",") if part.strip()]
+
     def __init__(
         self,
         master: tk.Widget,
@@ -123,7 +142,7 @@ class StepEditor:
         type_box = ttk.Combobox(
             header,
             textvariable=self.type_var,
-            values=["click", "paste", "key", "wait", "section"],
+            values=["click", "paste", "paste-csv", "key", "wait", "section"],
             state="readonly",
             width=10,
         )
@@ -132,11 +151,11 @@ class StepEditor:
 
         buttons = ttk.Frame(header, style="StepCard.TFrame")
         buttons.grid(row=0, column=2, sticky="e")
-        ttk.Button(buttons, text="上移", width=5, command=self.on_move_up).grid(row=0, column=0, padx=1)
-        ttk.Button(buttons, text="下移", width=5, command=self.on_move_down).grid(row=0, column=1, padx=1)
-        ttk.Button(buttons, text="复制", width=5, command=self.on_duplicate).grid(row=0, column=2, padx=1)
-        ttk.Button(buttons, text="清空", width=5, command=self.on_clear).grid(row=0, column=3, padx=1)
-        ttk.Button(buttons, text="删除", width=5, command=self.on_delete).grid(row=0, column=4, padx=1)
+        ttk.Button(buttons, text="复制", width=5, command=self.on_duplicate).grid(row=0, column=0, padx=1)
+        ttk.Button(buttons, text="清空", width=5, command=self.on_clear).grid(row=0, column=1, padx=1)
+        ttk.Button(buttons, text="↑", width=3, command=self.on_move_up).grid(row=0, column=2, padx=1)
+        ttk.Button(buttons, text="↓", width=3, command=self.on_move_down).grid(row=0, column=3, padx=1)
+        ttk.Button(buttons, text="×", width=3, command=self.on_delete).grid(row=0, column=4, padx=1)
 
         self.body = ttk.Frame(self.frame, style="StepCard.TFrame")
         self.body.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -168,11 +187,16 @@ class StepEditor:
             self.fields["y"].set("0")
             self.fields["button"].set("left")
         elif current == "paste":
-            self.fields["items"].set('["文本1", "文本2"]')
+            self.fields["items"].set("文本1, 文本2")
+        elif current == "paste-csv":
+            self.fields["input_expr"].set("input.A")
         elif current == "key":
             self.fields["combo"].set("tab")
-        else:
+        elif current == "wait":
             self.fields["seconds"].set("1")
+        elif current == "section":
+            self.fields["title"].set(self._section_name_cache or "阶段")
+            self.fields["note"].set("")
 
     def refresh_fields(self) -> None:
         current = self.type_var.get()
@@ -181,6 +205,8 @@ class StepEditor:
             self._build_click_fields()
         elif current == "paste":
             self._build_paste_fields()
+        elif current == "paste-csv":
+            self._build_paste_csv_fields()
         elif current == "key":
             self._build_key_fields()
         elif current == "section":
@@ -225,8 +251,8 @@ class StepEditor:
         self.fields = {"x": x_var, "y": y_var, "button": btn_var, "click_mode": clicks_var}
 
     def _build_paste_fields(self) -> None:
-        ttk.Label(self.body, text='文本数组 JSON').grid(row=0, column=0, sticky="w")
-        items_var = tk.StringVar(value='["文本1", "文本2"]')
+        ttk.Label(self.body, text="文本数组(逗号分隔)").grid(row=0, column=0, sticky="w")
+        items_var = tk.StringVar(value="文本1, 文本2")
         entry = ttk.Entry(self.body, textvariable=items_var)
         entry.grid(row=0, column=1, columnspan=5, sticky="ew", padx=(6, 0))
         if self.on_paste_changed:
@@ -234,6 +260,20 @@ class StepEditor:
             entry.bind("<FocusOut>", lambda _event: self.on_paste_changed())
             entry.bind("<Return>", lambda _event: self.on_paste_changed())
         self.fields = {"items": items_var}
+
+    def _build_paste_csv_fields(self) -> None:
+        ttk.Label(self.body, text="CSV列引用").grid(row=0, column=0, sticky="w")
+        expr_var = tk.StringVar(value="input.A")
+        entry = ttk.Entry(self.body, textvariable=expr_var)
+        entry.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(6, 12))
+        ttk.Label(self.body, text="固定文件：input.csv").grid(row=0, column=4, columnspan=2, sticky="w")
+        hint = ttk.Label(self.body, text="写法：input.A 或 input.A/B/C")
+        hint.grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        if self.on_paste_changed:
+            expr_var.trace_add("write", lambda *_args: self.on_paste_changed())
+            entry.bind("<FocusOut>", lambda _event: self.on_paste_changed())
+            entry.bind("<Return>", lambda _event: self.on_paste_changed())
+        self.fields = {"input_expr": expr_var}
 
     def _build_key_fields(self) -> None:
         ttk.Label(self.body, text="按键组合").grid(row=0, column=0, sticky="w")
@@ -311,15 +351,22 @@ class StepEditor:
                 "clicks": clicks_map.get(click_mode, 1),
             }
         if step_type == "paste":
-            items = json.loads(self.fields["items"].get())
-            if not isinstance(items, list):
-                raise ValueError("文本数组必须是 JSON 数组")
-            normalized = []
-            for item in items:
-                if not isinstance(item, str):
-                    raise ValueError("文本数组中每一项都必须是字符串")
-                normalized.append(item)
-            return {"type": "paste", "items": normalized}
+            items = self.parse_paste_items_text(self.fields["items"].get())
+            if not items:
+                raise ValueError("文本数组不能为空，请使用逗号分隔，例如：hi, ho")
+            return {"type": "paste", "items": items}
+        if step_type == "paste-csv":
+            expr = self.fields["input_expr"].get().strip()
+            if not expr:
+                raise ValueError("paste-csv 输入项不能为空，例如：input.A")
+            if not expr.lower().startswith("input."):
+                raise ValueError("paste-csv 写法必须以 input. 开头，例如：input.A/B")
+            cols_raw = expr.split(".", 1)[1].strip()
+            columns = [col.strip() for col in cols_raw.split("/") if col.strip()]
+            if not columns:
+                raise ValueError("请至少填写一个列名，例如：input.A")
+            normalized = f"input.{'/'.join(columns)}"
+            return {"type": "paste-csv", "input_expr": normalized, "columns": columns}
         if step_type == "key":
             combo = self.fields["combo"].get().strip()
             if not combo:
@@ -350,7 +397,14 @@ class StepEditor:
                 click_mode = "double"
             self.fields["click_mode"].set(click_mode)
         elif step_type == "paste":
-            self.fields["items"].set(json.dumps(data.get("items", []), ensure_ascii=False))
+            items = [str(item) for item in data.get("items", []) if str(item).strip()]
+            self.fields["items"].set(", ".join(items))
+        elif step_type == "paste-csv":
+            expr = str(data.get("input_expr", "")).strip()
+            if not expr:
+                columns = [str(col).strip() for col in data.get("columns", []) if str(col).strip()]
+                expr = f"input.{'/'.join(columns)}" if columns else "input.A"
+            self.fields["input_expr"].set(expr)
         elif step_type == "key":
             self.fields["combo"].set(data.get("combo", "tab"))
         elif step_type == "section":
@@ -381,6 +435,8 @@ class App:
         self.step_editors: List[StepEditor] = []
         self._render_pending = False
         self._loading_task = False
+        self.info_window: tk.Toplevel | None = None
+        self.info_avatar_image: tk.PhotoImage | None = None
 
         self.task_name_var = tk.StringVar(value=f"Auto{date.today():%Y%m%d}")
         self.loop_count_var = tk.StringVar(value="1")
@@ -499,6 +555,7 @@ class App:
         list_toolbar.columnconfigure(0, weight=1)
         ttk.Button(list_toolbar, text="新增步骤", command=self.add_step, style="AccentAdd.TButton").grid(row=0, column=0, sticky="w")
         ttk.Button(list_toolbar, text="清空全部", command=self.clear_all_steps).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Button(list_toolbar, text="input模板", command=self.generate_input_template).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
         self.canvas = tk.Canvas(canvas_frame, highlightthickness=0, bg="#F5F8FC")
         self.canvas.grid(row=1, column=0, sticky="nsew")
@@ -622,26 +679,90 @@ class App:
         self.root.destroy()
 
     def show_info(self) -> None:
+        if self.info_window and self.info_window.winfo_exists():
+            self.info_window.deiconify()
+            self.info_window.lift()
+            self.info_window.focus_force()
+            return
+
+        win = tk.Toplevel(self.root)
+        self.info_window = win
+        win.title(f"蜘蛛侠 Info {APP_VERSION}")
+        win.transient(self.root)
+        win.resizable(False, False)
+        win.configure(bg="#EDF2F8")
+        win.protocol("WM_DELETE_WINDOW", self._close_info_window)
+
+        panel = ttk.Frame(win, style="Main.TFrame", padding=12)
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(1, weight=1)
+
+        avatar_box = ttk.Frame(panel, style="StepCard.TFrame", padding=8)
+        avatar_box.grid(row=0, column=0, sticky="nw", padx=(0, 12))
+        avatar_label = ttk.Label(avatar_box, text="头像")
+        avatar_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        avatar_path = APP_DIR / "xiexin-avatar.png"
+        if avatar_path.exists():
+            try:
+                img = tk.PhotoImage(file=str(avatar_path))
+                target_h = int(self.default_font.metrics("linespace") * 4.2)
+                target_h = max(target_h, 56)
+                if img.height() > target_h:
+                    ratio = max(1, (img.height() + target_h - 1) // target_h)
+                    img = img.subsample(ratio, ratio)
+                self.info_avatar_image = img
+                ttk.Label(avatar_box, image=img).grid(row=1, column=0, sticky="w")
+            except Exception:
+                ttk.Label(avatar_box, text="头像加载失败").grid(row=1, column=0, sticky="w")
+        else:
+            ttk.Label(avatar_box, text="未找到 xiexin-avatar.png").grid(row=1, column=0, sticky="w")
+
+        right = ttk.Frame(panel, style="Main.TFrame")
+        right.grid(row=0, column=1, sticky="nsew")
+
         today = date.today().isoformat()
-        info_text = (
+        profile = (
             f"版本号：{APP_VERSION}\n"
             f"作者：{APP_AUTHOR}\n"
-            f"日期：{today}\n\n"
-            "版本变更简介：\n"
-            "- V1.5：paste 数值变更时，循环次数 K 自动更新为 paste 最大数组长度。\n"
-            "- V1.4：click 新增 single/double/triple，支持全局启动/叫停快捷键。\n"
-            "- V1.3：应用名更新并优化 DPI 显示，新增内置任务 auto_test。\n\n"
-            "使用方式：\n"
-            "1. 在步骤列表中新增并配置 click/paste/key/wait。\n"
-            "2. 设定循环次数 K 与步骤间隔(s)。\n"
-            "3. 点运行执行任务；可保存/加载任务 JSON 复用。\n\n"
-            "框架简介：\n"
-            "- UI：Tkinter + ttk（Windows 桌面）\n"
-            "- 自动化：pyautogui（鼠标/键盘）\n"
-            "- 剪贴板：pyperclip\n"
-            "- 数据：JSON 任务文件"
+            f"日期：{today}"
         )
-        messagebox.showinfo("蜘蛛侠 - Info", info_text)
+        usage = (
+            "1. 新增步骤并配置 click/paste/paste-csv/key/wait。\n"
+            "2. 设置循环次数 K 与步骤间隔。\n"
+            "3. 点运行执行，可保存/加载任务复用。"
+        )
+        framework = (
+            "- UI：Tkinter + ttk\n"
+            "- 自动化：pyautogui\n"
+            "- 剪贴板：pyperclip\n"
+            "- 数据：JSON + input.csv"
+        )
+        changes = (
+            "- V2.0：Info 面板支持头像展示与分区排版。\n"
+            "- V2.0：新增 paste-csv 与 input 模板联动。\n"
+            "- V2.0：步骤按钮简化为 复制/清空/↑/↓/×。"
+        )
+
+        ttk.Label(right, text="人员信息", style="Section.TLabelframe.Label").grid(row=0, column=0, sticky="w")
+        ttk.Label(right, text=profile, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 10))
+
+        ttk.Label(right, text="项目使用方式", style="Section.TLabelframe.Label").grid(row=2, column=0, sticky="w")
+        ttk.Label(right, text=usage, justify="left", wraplength=440).grid(row=3, column=0, sticky="w", pady=(2, 10))
+
+        ttk.Label(right, text="框架简介", style="Section.TLabelframe.Label").grid(row=4, column=0, sticky="w")
+        ttk.Label(right, text=framework, justify="left").grid(row=5, column=0, sticky="w", pady=(2, 10))
+
+        ttk.Label(right, text="版本变更", style="Section.TLabelframe.Label").grid(row=6, column=0, sticky="w")
+        ttk.Label(right, text=changes, justify="left", wraplength=440).grid(row=7, column=0, sticky="w")
+
+        ttk.Button(right, text="关闭", command=self._close_info_window, width=8).grid(row=8, column=0, sticky="e", pady=(12, 0))
+
+    def _close_info_window(self) -> None:
+        if self.info_window and self.info_window.winfo_exists():
+            self.info_window.destroy()
+        self.info_window = None
+        self.info_avatar_image = None
 
     def _update_scroll_region(self, _event=None) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -713,6 +834,25 @@ class App:
         self._sync_loop_count_from_paste()
         self._request_render_steps()
 
+    def generate_input_template(self) -> None:
+        path = APP_DIR / "input.csv"
+        if path.exists():
+            overwrite = messagebox.askyesno("提示", "input.csv 已存在，是否覆盖？")
+            if not overwrite:
+                return
+        rows = [
+            {"A": "1", "B": "红色", "C": "苹果"},
+            {"A": "2", "B": "蓝色", "C": "香蕉"},
+            {"A": "3", "B": "绿色", "C": "橙子"},
+            {"A": "4", "B": "黄色", "C": "葡萄"},
+            {"A": "5", "B": "黑色", "C": "西瓜"},
+        ]
+        with path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["A", "B", "C"])
+            writer.writeheader()
+            writer.writerows(rows)
+        self.status_var.set("已生成 input.csv 模板")
+
     def remove_step(self, editor: StepEditor) -> None:
         if editor in self.step_editors:
             self.step_editors.remove(editor)
@@ -740,19 +880,18 @@ class App:
             return
         max_size = 0
         for editor in self.step_editors:
-            if editor.type_var.get() != "paste":
+            if editor.type_var.get() not in ("paste", "paste-csv"):
                 continue
-            items_var = editor.fields.get("items")
-            if not items_var:
-                continue
-            try:
-                items = json.loads(items_var.get())
-            except Exception:
-                continue
-            if not isinstance(items, list):
-                continue
-            if not all(isinstance(item, str) for item in items):
-                continue
+            if editor.type_var.get() == "paste":
+                items_var = editor.fields.get("items")
+                if not items_var:
+                    continue
+                items = StepEditor.parse_paste_items_text(items_var.get())
+            else:
+                try:
+                    items = self._load_input_csv_rows()
+                except Exception:
+                    items = []
             max_size = max(max_size, len(items))
         if max_size > 0:
             self.loop_count_var.set(str(max_size))
@@ -803,6 +942,9 @@ class App:
         steps = [editor.to_dict() for editor in self.step_editors]
         if not steps:
             raise ValueError("至少要有一个步骤")
+        executable_steps = [s for s in steps if s.get("type") != "section"]
+        if not executable_steps:
+            raise ValueError("至少要有一个可执行步骤（click / paste / paste-csv / key / wait）")
         return {
             "version": 1,
             "name": name,
@@ -937,6 +1079,7 @@ class App:
             loop_count = int(task["loop_count"])
             delay_seconds = float(task["delay_seconds"])
             steps = task["steps"]
+            csv_rows = self._load_input_csv_rows() if any(step.get("type") == "paste-csv" for step in steps) else []
             total = 0
             started_at = time.perf_counter()
             completed_loops = 0
@@ -947,7 +1090,7 @@ class App:
                 for step_index, step in enumerate(steps, start=1):
                     if self.stop_event.is_set():
                         break
-                    self._execute_step(step, loop_index)
+                    self._execute_step(step, loop_index, csv_rows)
                     total += 1
                     self.ui_queue.put(("status", f"已执行轮次 {loop_index + 1}，步骤 {step_index}/{len(steps)}"))
                     if delay_seconds > 0:
@@ -971,7 +1114,7 @@ class App:
         except Exception as exc:
             self.ui_queue.put(("error", str(exc)))
 
-    def _execute_step(self, step: Dict[str, Any], loop_index: int = 0) -> None:
+    def _execute_step(self, step: Dict[str, Any], loop_index: int = 0, csv_rows: List[Dict[str, str]] | None = None) -> None:
         pyautogui = self._get_pyautogui()
         step_type = step.get("type")
         if step_type == "click":
@@ -994,6 +1137,28 @@ class App:
             time.sleep(0.05)
             pyautogui.hotkey("ctrl", "v")
             time.sleep(0.05)
+            return
+        if step_type == "paste-csv":
+            if not csv_rows:
+                raise RuntimeError("未找到可用 input.csv 数据，请先点‘input模板’生成")
+            columns = [str(col).strip() for col in step.get("columns", []) if str(col).strip()]
+            if not columns:
+                expr = str(step.get("input_expr", "")).strip()
+                if not expr.lower().startswith("input."):
+                    raise ValueError("paste-csv 配置错误：请输入 input.列名")
+                columns = [col.strip() for col in expr.split(".", 1)[1].split("/") if col.strip()]
+            if not columns:
+                raise ValueError("paste-csv 配置错误：列名不能为空")
+
+            row = csv_rows[loop_index % len(csv_rows)]
+            pyperclip = self._get_pyperclip()
+            for col in columns:
+                if col not in row:
+                    raise ValueError(f"input.csv 缺少列：{col}")
+                pyperclip.copy(str(row.get(col, "")))
+                time.sleep(0.05)
+                pyautogui.hotkey("ctrl", "v")
+                time.sleep(0.05)
             return
         if step_type == "key":
             combo = [part.strip().lower() for part in step.get("combo", "").split("+") if part.strip()]
@@ -1032,6 +1197,32 @@ class App:
                 raise RuntimeError("缺少 pyperclip，请先安装依赖") from exc
             _pyperclip = module
         return _pyperclip
+
+    def _load_input_csv_rows(self) -> List[Dict[str, str]]:
+        path = APP_DIR / "input.csv"
+        if not path.exists():
+            raise FileNotFoundError("未找到 input.csv，请先点‘input模板’生成")
+
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                raise ValueError("input.csv 表头为空，请检查文件")
+            rows: List[Dict[str, str]] = []
+            for raw in reader:
+                if not raw:
+                    continue
+                item: Dict[str, str] = {}
+                for key, value in raw.items():
+                    k = (key or "").strip()
+                    if not k:
+                        continue
+                    item[k] = "" if value is None else str(value).strip()
+                if item:
+                    rows.append(item)
+
+        if not rows:
+            raise ValueError("input.csv 没有数据行，请至少保留 1 行")
+        return rows
 
     def _poll_ui_queue(self) -> None:
         try:
