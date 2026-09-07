@@ -1,4 +1,4 @@
-"""SpiderMan V2.3.
+"""SpiderMan V2.4.
 
 Windows desktop automation tool with task editing, loop execution,
 JSON save/load, and simple mouse/keyboard/wait actions.
@@ -42,15 +42,14 @@ APP_DIR = _get_runtime_app_dir()
 TASK_DIR = APP_DIR / "tasks"
 TASK_DIR.mkdir(exist_ok=True)
 APP_NAME = "蜘蛛侠"
-APP_VERSION = "V2.3"
+APP_VERSION = "V2.4"
 APP_AUTHOR = "广州分行 xiexin1.gd"
-APP_USER_MODEL_ID = "ccb.spiderman.app.v2_3"
+APP_USER_MODEL_ID = "ccb.spiderman.app.v2_4"
 GLOBAL_START_HOTKEY_LABEL = "Ctrl+F5"
 GLOBAL_STOP_HOTKEY_LABEL = "Ctrl+Shift+Alt+W"
-GLOBAL_RECORD_STOP_HOTKEY_LABEL = "Ctrl+Shift+Alt+R"
+GLOBAL_RECORD_STOP_HOTKEY_LABEL = "Ctrl+Enter"
 HOTKEY_ID_START = 0xB000
 HOTKEY_ID_STOP = 0xB001
-HOTKEY_ID_RECORD_STOP = 0xB002
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 WM_SETICON = 0x0080
@@ -320,10 +319,14 @@ class StepEditor:
             self._apply_body_label_style(child, label_style)
 
     def set_selected(self, selected: bool) -> None:
+        if self.is_selected == selected:
+            return
         self.is_selected = selected
         self._apply_card_style()
 
     def set_in_subloop_body(self, in_subloop_body: bool) -> None:
+        if self.in_subloop_body == in_subloop_body:
+            return
         self.in_subloop_body = in_subloop_body
         self._apply_card_style()
 
@@ -624,19 +627,34 @@ class App:
         self.info_avatar_alt_image: Any | None = None
         self.info_avatar_label: ttk.Label | None = None
         self.info_avatar_showing_alt = False
+        self._countdown_after_id: str | None = None
+        self._countdown_remaining_seconds = 0
+        self._countdown_task: Dict[str, Any] | None = None
+        self._countdown_csv_rows: List[Dict[str, str]] = []
 
         self.task_name_var = tk.StringVar(value=f"Auto{date.today():%Y%m%d}")
         self.loop_count_var = tk.StringVar(value="1")
         self.delay_var = tk.StringVar(value="0.3")
+        self.target_hour_var = tk.StringVar(value="")
+        self.target_min_var = tk.StringVar(value="")
+        self.target_sec_var = tk.StringVar(value="")
+        self.countdown_hour_var = tk.StringVar(value="0")
+        self.countdown_min_var = tk.StringVar(value="0")
+        self.countdown_sec_var = tk.StringVar(value="0")
         self.status_var = tk.StringVar(value="就绪")
 
         self._build_ui()
+        self.root.bind_class("TButton", "<ButtonRelease-1>", self._on_button_release_focus, add="+")
         self._load_task_list()
         self.root.after_idle(lambda: self.add_step({"type": "click", "x": 0, "y": 0, "button": "left"}))
         self.root.after(100, self._poll_ui_queue)
         self.root.bind("<Configure>", self._on_root_resize)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._start_global_hotkey_listener()
+
+    def _on_button_release_focus(self, _event=None) -> None:
+        # Avoid keeping dotted focus on action buttons after click.
+        self.root.after_idle(self.root.focus_set)
 
     def _apply_window_icon(self) -> None:
         try:
@@ -724,6 +742,7 @@ class App:
     def _apply_font_scale(self, size: int) -> None:
         self.default_font = tkfont.Font(family="Segoe UI", size=size, weight="bold")
         self.section_font = tkfont.Font(family="Segoe UI", size=size + 2, weight="bold")
+        self.footer_font = tkfont.Font(family="Segoe UI", size=max(size - 2, 9), weight="normal")
 
         self.root.option_add("*Font", self.default_font)
         style = ttk.Style(self.root)
@@ -758,6 +777,7 @@ class App:
         style.configure("StepCardSelectedText.TLabel", background="#FBE7E7", foreground="#1B2430")
         style.configure("PanelText.TLabel", background="#FFFFFF", foreground="#1B2430")
         style.configure("Info.TLabel", background="#EEF2F7", foreground="#1B2430")
+        style.configure("FooterHint.TLabel", background="#FFFFFF", foreground="#445068", font=self.footer_font)
         style.configure("Panel.TLabelframe", background="#FFFFFF", bordercolor="#CDD5E0", borderwidth=1)
         style.configure("Panel.TLabelframe.Label", background="#FFFFFF", foreground="#8E0C0C", font=self.section_font)
         style.configure("TLabel", background="#FFFFFF", foreground="#1B2430")
@@ -772,6 +792,12 @@ class App:
         style.configure("StepRound.TButton", background="#E9EEF5", foreground="#1F3C5C", borderwidth=1, padding=(4, 1))
         style.map("StepRound.TButton", background=[("active", "#DFE7F2"), ("pressed", "#D2DEEC")])
         style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#101114")
+        style.configure("CountdownActive.TEntry", fieldbackground="#FFF5F5", foreground="#B11313")
+        style.map(
+            "CountdownActive.TEntry",
+            foreground=[("disabled", "#B11313"), ("!disabled", "#B11313")],
+            fieldbackground=[("disabled", "#FFF5F5"), ("!disabled", "#FFF5F5")],
+        )
         style.configure("TCombobox", fieldbackground="#FFFFFF", foreground="#101114")
         style.configure("StepType.TCombobox", background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#1B2430")
         style.map(
@@ -804,9 +830,9 @@ class App:
         list_toolbar.columnconfigure(3, weight=1)
         ttk.Button(list_toolbar, text="新增步骤", command=self.add_step, style="AccentAdd.TButton", width=10).grid(row=0, column=0, sticky="w")
         ttk.Button(list_toolbar, text="子循环", command=self.add_subloop, style="AccentSubloop.TButton", width=10).grid(row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Button(list_toolbar, text="录制点击链", command=self.record_click_chain, width=10).grid(row=0, column=2, sticky="w", padx=(8, 0))
-        ttk.Button(list_toolbar, text="清空全部", command=self.clear_all_steps, width=10).grid(row=0, column=4, sticky="e", padx=(8, 0))
-        ttk.Button(list_toolbar, text="input模板", command=self.generate_input_template, width=10).grid(row=0, column=5, sticky="e", padx=(8, 0))
+        ttk.Button(list_toolbar, text="录制点击链", command=self.record_click_chain, width=10).grid(row=0, column=4, sticky="e", padx=(8, 0))
+        ttk.Button(list_toolbar, text="清空全部", command=self.clear_all_steps, width=10).grid(row=0, column=5, sticky="e", padx=(8, 0))
+        ttk.Button(list_toolbar, text="input模板", command=self.generate_input_template, width=10).grid(row=0, column=6, sticky="e", padx=(8, 0))
 
         self.canvas = tk.Canvas(canvas_frame, highlightthickness=0, bg="#FFFFFF")
         self.canvas.grid(row=1, column=0, sticky="nsew")
@@ -828,7 +854,7 @@ class App:
         config_actions.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         config_actions.columnconfigure(0, weight=1)
         config_actions.columnconfigure(1, weight=1)
-        ttk.Button(config_actions, text="运 行", command=self.run_task, style="AccentRun.TButton", width=8).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(config_actions, text="运    行", command=self.run_task, style="AccentRun.TButton", width=8).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(config_actions, text="Info", command=self.show_info, width=6).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         config_row = ttk.Frame(config, style="PanelInner.TFrame")
@@ -836,14 +862,43 @@ class App:
         config_row.columnconfigure(1, weight=1)
 
         ttk.Label(config_row, text="任务名", style="PanelText.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(config_row, textvariable=self.task_name_var, width=14).grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ttk.Label(config_row, text="循环次数 K", style="PanelText.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(config_row, textvariable=self.loop_count_var, width=7).grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+        self.task_name_entry = ttk.Entry(config_row, textvariable=self.task_name_var, width=14)
+        self.task_name_entry.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Label(config_row, text="循环次数", style="PanelText.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.loop_count_entry = ttk.Entry(config_row, textvariable=self.loop_count_var, width=7)
+        self.loop_count_entry.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
         ttk.Label(config_row, text="步骤间隔(s)", style="PanelText.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(config_row, textvariable=self.delay_var, width=7).grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+        self.delay_entry = ttk.Entry(config_row, textvariable=self.delay_var, width=7)
+        self.delay_entry.grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+
+        ttk.Label(config_row, text="定时(24h)", style="PanelText.TLabel").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        target_time_box = ttk.Frame(config_row, style="PanelInner.TFrame")
+        target_time_box.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        self.target_hour_entry = ttk.Entry(target_time_box, textvariable=self.target_hour_var, width=3, justify="center")
+        self.target_hour_entry.grid(row=0, column=0, sticky="w")
+        ttk.Label(target_time_box, text="时", style="PanelText.TLabel").grid(row=0, column=1, sticky="w", padx=(2, 4))
+        self.target_min_entry = ttk.Entry(target_time_box, textvariable=self.target_min_var, width=3, justify="center")
+        self.target_min_entry.grid(row=0, column=2, sticky="w")
+        ttk.Label(target_time_box, text="分", style="PanelText.TLabel").grid(row=0, column=3, sticky="w", padx=(2, 4))
+        self.target_sec_entry = ttk.Entry(target_time_box, textvariable=self.target_sec_var, width=3, justify="center")
+        self.target_sec_entry.grid(row=0, column=4, sticky="w")
+        ttk.Label(target_time_box, text="秒", style="PanelText.TLabel").grid(row=0, column=5, sticky="w", padx=(2, 0))
+
+        ttk.Label(config_row, text="倒计时", style="PanelText.TLabel").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        countdown_box = ttk.Frame(config_row, style="PanelInner.TFrame")
+        countdown_box.grid(row=4, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        self.countdown_hour_entry = ttk.Entry(countdown_box, textvariable=self.countdown_hour_var, width=3, justify="center")
+        self.countdown_hour_entry.grid(row=0, column=0, sticky="w")
+        ttk.Label(countdown_box, text="时", style="PanelText.TLabel").grid(row=0, column=1, sticky="w", padx=(2, 4))
+        self.countdown_min_entry = ttk.Entry(countdown_box, textvariable=self.countdown_min_var, width=3, justify="center")
+        self.countdown_min_entry.grid(row=0, column=2, sticky="w")
+        ttk.Label(countdown_box, text="分", style="PanelText.TLabel").grid(row=0, column=3, sticky="w", padx=(2, 4))
+        self.countdown_sec_entry = ttk.Entry(countdown_box, textvariable=self.countdown_sec_var, width=3, justify="center")
+        self.countdown_sec_entry.grid(row=0, column=4, sticky="w")
+        ttk.Label(countdown_box, text="秒", style="PanelText.TLabel").grid(row=0, column=5, sticky="w", padx=(2, 0))
 
         side = ttk.LabelFrame(container, text="保存/加载", padding=8, style="Panel.TLabelframe")
-        side.grid(row=1, column=1, sticky="nsew", pady=(8, 0))
+        side.grid(row=1, column=1, sticky="nsew", pady=(14, 0))
         side.configure(width=300)
         side.grid_propagate(False)
         side.columnconfigure(0, weight=1)
@@ -872,18 +927,27 @@ class App:
 
         bottom = ttk.Frame(container, style="Footer.TFrame")
         bottom.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        bottom.columnconfigure(0, weight=1)
-        ttk.Label(
+        bottom.columnconfigure(0, weight=0)
+        bottom.columnconfigure(1, weight=1)
+        tk.Label(
             bottom,
-            text=(
-                f"启动快捷键：{GLOBAL_START_HOTKEY_LABEL}\n"
-                f"全局叫停快捷键：{GLOBAL_STOP_HOTKEY_LABEL}\n"
-                f"录制结束快捷键：{GLOBAL_RECORD_STOP_HOTKEY_LABEL}"
-            ),
+            text=f"启动：{GLOBAL_START_HOTKEY_LABEL}  |  全局叫停：{GLOBAL_STOP_HOTKEY_LABEL}  |  录制结束：{GLOBAL_RECORD_STOP_HOTKEY_LABEL}",
             justify="left",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 2))
-        ttk.Button(bottom, text="停止", command=self.stop_task).grid(row=1, column=0, sticky="w")
-        ttk.Label(bottom, textvariable=self.status_var, justify="right", anchor="e").grid(row=1, column=1, sticky="e")
+            anchor="w",
+            bg="#FFFFFF",
+            fg="#445068",
+            font=self.footer_font,
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+        ttk.Button(bottom, text="停    止", command=self.stop_task).grid(row=1, column=0, sticky="w")
+        tk.Label(
+            bottom,
+            textvariable=self.status_var,
+            justify="right",
+            anchor="e",
+            bg="#FFFFFF",
+            fg="#445068",
+            font=self.footer_font,
+        ).grid(row=1, column=1, sticky="ew")
 
     def _on_root_resize(self, event) -> None:
         if event.widget is not self.root:
@@ -964,21 +1028,16 @@ class App:
         mod_shift = 0x0004
         vk_f5 = 0x74
         vk_w = 0x57
-        vk_r = 0x52
         stop_modifiers = mod_alt | mod_control | mod_shift
         start_modifiers = mod_control
-        record_stop_modifiers = mod_alt | mod_control | mod_shift
 
         start_ok = bool(user32.RegisterHotKey(None, HOTKEY_ID_START, start_modifiers, vk_f5))
         stop_ok = bool(user32.RegisterHotKey(None, HOTKEY_ID_STOP, stop_modifiers, vk_w))
-        record_stop_ok = bool(user32.RegisterHotKey(None, HOTKEY_ID_RECORD_STOP, record_stop_modifiers, vk_r))
         if not start_ok:
             self.ui_queue.put(("status", f"启动热键注册失败：{GLOBAL_START_HOTKEY_LABEL}"))
         if not stop_ok:
             self.ui_queue.put(("status", f"全局热键注册失败：{GLOBAL_STOP_HOTKEY_LABEL}"))
-        if not record_stop_ok:
-            self.ui_queue.put(("status", f"录制结束热键注册失败：{GLOBAL_RECORD_STOP_HOTKEY_LABEL}"))
-        if not start_ok and not stop_ok and not record_stop_ok:
+        if not start_ok and not stop_ok:
             return
 
         msg = wintypes.MSG()
@@ -993,14 +1052,11 @@ class App:
                         self.ui_queue.put(("hotkey_start", None))
                     elif hotkey_id == HOTKEY_ID_STOP:
                         self.ui_queue.put(("hotkey_stop", None))
-                    elif hotkey_id == HOTKEY_ID_RECORD_STOP:
-                        self.ui_queue.put(("hotkey_record_stop", None))
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
         finally:
             user32.UnregisterHotKey(None, HOTKEY_ID_START)
             user32.UnregisterHotKey(None, HOTKEY_ID_STOP)
-            user32.UnregisterHotKey(None, HOTKEY_ID_RECORD_STOP)
 
     def _stop_global_hotkey_listener(self) -> None:
         self.hotkey_stop_event.set()
@@ -1010,6 +1066,7 @@ class App:
             self.hotkey_thread.join(timeout=0.5)
 
     def _on_close(self) -> None:
+        self._cancel_countdown()
         self._stop_global_hotkey_listener()
         if self._temp_icon_path and self._temp_icon_path.exists():
             try:
@@ -1222,9 +1279,9 @@ class App:
             "- 数据：JSON + input.csv"
         )
         changes = (
-            "- V2.3：新增录制点击链，左键采样后按 Enter 或快捷键结束并插入步骤。\n"
-            "- V2.3：logo 资源内嵌，窗口/任务栏图标与彩蛋切换不依赖外部文件。\n"
-            "- V2.3：窗口缩放与步骤渲染继续优化，保持轻量化体验。"
+            "1、V2.4：新增定时(24h)启动，运行时自动换算倒计时并到点执行。\n"
+            "2、V2.4：倒计时执行期间时/分/秒输入禁用，数字高亮红色并支持停止取消。\n"
+            "3、V2.4：工具栏与任务配置区排版优化，录制点击链右移，底部提示信息更清晰。"
         )
 
         ttk.Label(info, text="开发者信息", style="Section.TLabelframe.Label").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
@@ -1428,12 +1485,12 @@ class App:
             self.status_var.set(f"录制结束请求已发送：{GLOBAL_RECORD_STOP_HOTKEY_LABEL}")
             return
         if self.selected_editor not in self.step_editors:
-            messagebox.showinfo("提示", "请先选择一个聚焦步骤，再开始录制")
+            messagebox.showinfo("提示", "请先在左侧步骤列表中选择要插入到其后的步骤，再开始录制")
             return
 
         anchor_index = self.step_editors.index(self.selected_editor)
         self._recording_clicks = True
-        self.status_var.set(f"录制中：左键点击采样，按 Enter 或 {GLOBAL_RECORD_STOP_HOTKEY_LABEL} 结束")
+        self.status_var.set(f"录制中：左键点击采样，按 {GLOBAL_RECORD_STOP_HOTKEY_LABEL} 结束；结果插入到当前选中步骤后")
         self.root.withdraw()
         self._recording_thread = threading.Thread(
             target=self._record_click_chain_worker,
@@ -1449,10 +1506,11 @@ class App:
         try:
             user32 = ctypes.windll.user32
             vk_lbutton = 0x01
+            vk_control = 0x11
             vk_return = 0x0D
             points: List[Tuple[int, int]] = []
             lbutton_prev = False
-            enter_prev = False
+            stop_prev = False
             started_at = time.perf_counter()
 
             while True:
@@ -1462,12 +1520,14 @@ class App:
                     user32.GetCursorPos(ctypes.byref(pt))
                     points.append((int(pt.x), int(pt.y)))
 
+                ctrl_down = bool(user32.GetAsyncKeyState(vk_control) & 0x8000)
                 enter_down = bool(user32.GetAsyncKeyState(vk_return) & 0x8000)
-                if time.perf_counter() - started_at >= 0.25 and enter_down and not enter_prev:
+                stop_down = ctrl_down and enter_down
+                if time.perf_counter() - started_at >= 0.25 and stop_down and not stop_prev:
                     break
 
                 lbutton_prev = lbutton_down
-                enter_prev = enter_down
+                stop_prev = stop_down
                 time.sleep(0.01)
 
             self.ui_queue.put(("record_done", {"anchor_index": anchor_index, "points": points}))
@@ -1596,11 +1656,7 @@ class App:
         if not self.steps_container.winfo_exists():
             return
 
-        for child in self.steps_container.winfo_children():
-            try:
-                child.grid_forget()
-            except tk.TclError:
-                pass
+        # Reflow existing cards in place to avoid blank-frame flicker on add/remove.
         visible_editors = [editor for editor in self.step_editors if editor.frame.winfo_exists()]
         self.step_editors = visible_editors
         indents = self._compute_step_indents()
@@ -1632,10 +1688,6 @@ class App:
                 editor.frame.grid(row=index, column=0, sticky="ew", pady=2, padx=(indent * 20, 0))
             except tk.TclError:
                 continue
-        try:
-            self.steps_container.update_idletasks()
-        except tk.TclError:
-            return
         self._update_scroll_region()
 
     def _compute_step_indents(self) -> List[int]:
@@ -1681,6 +1733,16 @@ class App:
             "name": name,
             "loop_count": loop_count,
             "delay_seconds": delay_seconds,
+            "target_time": {
+                "hour": str(self.target_hour_var.get()).strip(),
+                "minute": str(self.target_min_var.get()).strip(),
+                "second": str(self.target_sec_var.get()).strip(),
+            },
+            "countdown": {
+                "hour": str(self.countdown_hour_var.get()).strip() or "0",
+                "minute": str(self.countdown_min_var.get()).strip() or "0",
+                "second": str(self.countdown_sec_var.get()).strip() or "0",
+            },
             "steps": steps,
         }
 
@@ -1780,6 +1842,15 @@ class App:
             self.task_name_var.set(data.get("name", source_name.rsplit(".", 1)[0]))
             self.loop_count_var.set(str(data.get("loop_count", 1)))
             self.delay_var.set(str(data.get("delay_seconds", 0.3)))
+            target_time = data.get("target_time", {}) if isinstance(data.get("target_time", {}), dict) else {}
+            self.target_hour_var.set(str(target_time.get("hour", "")))
+            self.target_min_var.set(str(target_time.get("minute", "")))
+            self.target_sec_var.set(str(target_time.get("second", "")))
+
+            countdown = data.get("countdown", {}) if isinstance(data.get("countdown", {}), dict) else {}
+            self.countdown_hour_var.set(str(countdown.get("hour", "0")))
+            self.countdown_min_var.set(str(countdown.get("minute", "0")))
+            self.countdown_sec_var.set(str(countdown.get("second", "0")))
             for editor in self.step_editors:
                 editor.frame.destroy()
             self.step_editors.clear()
@@ -1796,7 +1867,132 @@ class App:
         for path in sorted(TASK_DIR.glob("*.json")):
             self.task_list.insert(tk.END, path.name)
 
+    def _parse_countdown_seconds(self) -> int:
+        try:
+            hour = int(str(self.countdown_hour_var.get()).strip() or "0")
+            minute = int(str(self.countdown_min_var.get()).strip() or "0")
+            second = int(str(self.countdown_sec_var.get()).strip() or "0")
+        except ValueError as exc:
+            raise ValueError("倒计时仅支持整数（小时/分钟/秒）") from exc
+
+        if hour < 0 or minute < 0 or second < 0:
+            raise ValueError("倒计时不能为负数")
+        if minute >= 60 or second >= 60:
+            raise ValueError("分钟和秒请填写 0-59")
+        return hour * 3600 + minute * 60 + second
+
+    def _parse_target_time_countdown_seconds(self) -> int | None:
+        hour_text = str(self.target_hour_var.get()).strip()
+        minute_text = str(self.target_min_var.get()).strip()
+        second_text = str(self.target_sec_var.get()).strip()
+        if not hour_text and not minute_text and not second_text:
+            return None
+
+        try:
+            hour = int(hour_text or "0")
+            minute = int(minute_text or "0")
+            second = int(second_text or "0")
+        except ValueError as exc:
+            raise ValueError("定时启动仅支持整数（24小时制时/分/秒）") from exc
+
+        if hour < 0 or minute < 0 or second < 0:
+            raise ValueError("定时启动不能为负数")
+        if hour >= 24:
+            raise ValueError("定时启动小时请填写 0-23")
+        if minute >= 60 or second >= 60:
+            raise ValueError("定时启动分钟和秒请填写 0-59")
+
+        now = time.localtime()
+        now_seconds = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+        target_seconds = hour * 3600 + minute * 60 + second
+        delta = target_seconds - now_seconds
+        if delta < 0:
+            delta += 24 * 3600
+        return delta
+
+    def _set_countdown_from_seconds(self, total_seconds: int) -> None:
+        seconds = max(0, int(total_seconds))
+        hour = seconds // 3600
+        minute = (seconds % 3600) // 60
+        second = seconds % 60
+        self.countdown_hour_var.set(str(hour))
+        self.countdown_min_var.set(f"{minute:02d}")
+        self.countdown_sec_var.set(f"{second:02d}")
+
+    def _set_countdown_inputs_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for widget in (
+            self.target_hour_entry,
+            self.target_min_entry,
+            self.target_sec_entry,
+            self.countdown_hour_entry,
+            self.countdown_min_entry,
+            self.countdown_sec_entry,
+        ):
+            widget.configure(state=state)
+
+    def _set_countdown_number_style(self, active: bool) -> None:
+        style_name = "CountdownActive.TEntry" if active else "TEntry"
+        for widget in (self.countdown_hour_entry, self.countdown_min_entry, self.countdown_sec_entry):
+            widget.configure(style=style_name)
+
+    def _cancel_countdown(self, status_text: str | None = None) -> None:
+        if self._countdown_after_id:
+            try:
+                self.root.after_cancel(self._countdown_after_id)
+            except Exception:
+                pass
+            self._countdown_after_id = None
+        self._countdown_remaining_seconds = 0
+        self._countdown_task = None
+        self._countdown_csv_rows = []
+        self._set_countdown_inputs_enabled(True)
+        self._set_countdown_number_style(False)
+        if status_text:
+            self.status_var.set(status_text)
+
+    def _start_countdown(self, task: Dict[str, Any], preloaded_csv_rows: List[Dict[str, str]], total_seconds: int) -> None:
+        self._countdown_task = task
+        self._countdown_csv_rows = preloaded_csv_rows
+        self._countdown_remaining_seconds = int(total_seconds)
+        self._set_countdown_inputs_enabled(False)
+        self._set_countdown_number_style(True)
+        self._set_countdown_from_seconds(self._countdown_remaining_seconds)
+        self.status_var.set("倒计时中")
+        self._tick_countdown()
+
+    def _tick_countdown(self) -> None:
+        if self._countdown_task is None:
+            self._cancel_countdown()
+            return
+
+        if self._countdown_remaining_seconds <= 0:
+            task = self._countdown_task
+            csv_rows = list(self._countdown_csv_rows)
+            self._countdown_after_id = None
+            self._countdown_task = None
+            self._countdown_csv_rows = []
+            self._set_countdown_inputs_enabled(True)
+            self._set_countdown_number_style(False)
+            self.status_var.set("倒计时结束，任务启动中")
+            self._start_task_execution(task, csv_rows)
+            return
+
+        self._set_countdown_from_seconds(self._countdown_remaining_seconds)
+        self.status_var.set("倒计时中")
+        self._countdown_remaining_seconds -= 1
+        self._countdown_after_id = self.root.after(1000, self._tick_countdown)
+
+    def _start_task_execution(self, task: Dict[str, Any], preloaded_csv_rows: List[Dict[str, str]]) -> None:
+        self.stop_event.clear()
+        self.worker = threading.Thread(target=self._run_task_worker, args=(task, preloaded_csv_rows), daemon=True)
+        self.worker.start()
+        self._hide_window()
+
     def run_task(self) -> None:
+        if self._countdown_task is not None:
+            messagebox.showinfo("提示", "倒计时进行中，请等待或点击‘停止’取消")
+            return
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("提示", "任务正在执行中")
             return
@@ -1829,10 +2025,21 @@ class App:
                 self.status_var.set("已取消执行")
                 return
 
-        self.stop_event.clear()
-        self.worker = threading.Thread(target=self._run_task_worker, args=(task, preloaded_csv_rows), daemon=True)
-        self.worker.start()
-        self._hide_window()
+        try:
+            target_countdown_seconds = self._parse_target_time_countdown_seconds()
+            if target_countdown_seconds is None:
+                countdown_seconds = self._parse_countdown_seconds()
+            else:
+                countdown_seconds = target_countdown_seconds
+        except Exception as exc:
+            messagebox.showerror("配置错误", str(exc))
+            return
+
+        if countdown_seconds > 0:
+            self._start_countdown(task, preloaded_csv_rows, countdown_seconds)
+            return
+
+        self._start_task_execution(task, preloaded_csv_rows)
 
     def _collect_referenced_input_columns(self, steps: List[Dict[str, Any]]) -> List[str]:
         columns: List[str] = []
@@ -1890,6 +2097,9 @@ class App:
         self.root.after(100, lambda: self.root.attributes("-topmost", False))
 
     def stop_task(self) -> None:
+        if self._countdown_task is not None:
+            self._cancel_countdown("已取消倒计时")
+            return
         self.stop_event.set()
         self.status_var.set("请求停止中")
 
@@ -1995,6 +2205,8 @@ class App:
         pyautogui = self._get_pyautogui()
         step_type = step.get("type")
         if step_type == "click":
+            if int(step.get("x", 0)) == 0 and int(step.get("y", 0)) == 0:
+                raise ValueError("检测到点击坐标 x=0 且 y=0（屏幕左上角安全角）。请不要填写 x=0、y=0，请先录制点击链或填入实际坐标。")
             clicks = max(1, min(3, int(step.get("clicks", 1))))
             button = str(step.get("button", "left")).lower()
             if button not in ("left", "right"):
@@ -2131,14 +2343,14 @@ class App:
                         self.run_task()
                         self.status_var.set(f"已触发启动快捷键：{GLOBAL_START_HOTKEY_LABEL}")
                 elif kind == "hotkey_stop":
-                    if self.worker and self.worker.is_alive():
+                    if self._countdown_task is not None:
+                        self.stop_task()
+                        self.status_var.set(f"已触发全局叫停：{GLOBAL_STOP_HOTKEY_LABEL}（已取消倒计时）")
+                        self._show_window()
+                    elif self.worker and self.worker.is_alive():
                         self.stop_task()
                         self.status_var.set(f"已触发全局叫停：{GLOBAL_STOP_HOTKEY_LABEL}")
                         self._show_window()
-                elif kind == "hotkey_record_stop":
-                    if self._recording_clicks:
-                        self._recording_clicks = False
-                        self.status_var.set(f"已触发录制结束：{GLOBAL_RECORD_STOP_HOTKEY_LABEL}")
                 elif kind == "record_done":
                     self._recording_clicks = False
                     self._show_window()
