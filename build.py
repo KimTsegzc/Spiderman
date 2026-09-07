@@ -1,4 +1,4 @@
-"""SpiderMan V1.5 release builder.
+"""SpiderMan V2.3 release builder.
 
 Builds one-file exe, compresses to zip, and splits zip into 48MB parts.
 """
@@ -11,14 +11,18 @@ import sys
 import zipfile
 from pathlib import Path
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 WORK = ROOT / "work"
 APP = ROOT / "app.py"
-APP_VERSION = "V1.5"
+APP_VERSION = "V2.3"
 EXE_NAME = f"spiderman_{APP_VERSION.lower()}"
 ZIP_NAME = ROOT / f"spiderman_{APP_VERSION.lower()}.zip"
+ICON_PATH = ROOT / "images.ico"
+ICON_SOURCE = ROOT / "images.jfif"
 SPLIT_SIZE = 48 * 1024 * 1024
 
 
@@ -35,8 +39,43 @@ def clean(paths: list[Path]) -> None:
                 path.unlink()
 
 
+def build_icon() -> Path:
+    if not ICON_SOURCE.exists():
+        raise FileNotFoundError(f"Icon source not found: {ICON_SOURCE}")
+
+    img = Image.open(ICON_SOURCE).convert("RGB")
+    # Crop near-white outer border aggressively so logo fills the icon canvas.
+    gray = img.convert("L")
+    bbox = gray.point(lambda p: 255 if p < 252 else 0).getbbox()
+    if bbox:
+        img = img.crop(bbox)
+
+    w, h = img.size
+    side = max(w, h)
+    # If aspect ratio is not square, keep content centered and fill remaining area with white.
+    square = Image.new("RGB", (side, side), (255, 255, 255))
+    square.paste(img, ((side - w) // 2, (side - h) // 2))
+
+    # Keep only a very small safety margin while making the icon look full.
+    inner = int(side * 0.98)
+    inner = max(inner, 16)
+    fitted = square.resize((inner, inner), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (side, side), (255, 255, 255))
+    canvas.paste(fitted, ((side - inner) // 2, (side - inner) // 2))
+
+    # Use BMP icon entries to avoid PNG-compressed icon artifacts.
+    canvas.save(
+        ICON_PATH,
+        format="ICO",
+        bitmap_format="bmp",
+        sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)],
+    )
+    return ICON_PATH
+
+
 def build_exe() -> Path:
     clean([DIST, BUILD, WORK, ZIP_NAME])
+    icon_file = build_icon()
     pyinstaller = [
         sys.executable,
         "-m",
@@ -45,8 +84,11 @@ def build_exe() -> Path:
         "--clean",
         "--onefile",
         "--noconsole",
+        "--noupx",
         "--name",
         EXE_NAME,
+        "--icon",
+        str(icon_file),
         "--distpath",
         str(DIST),
         "--workpath",
